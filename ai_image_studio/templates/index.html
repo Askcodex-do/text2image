@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Image Studio</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+</head>
+<body>
+  <header class="app-header">
+    <h1>AI Image Studio</h1>
+    <div class="header-right">
+      <label for="provider">Provider</label>
+      <select id="provider" aria-label="Image generation provider">
+        {% for p in providers %}
+        <option value="{{ p.name }}" {% if p.name == default_provider %}selected{% endif %}>
+          {{ p.label }}{% if not p.available %} (not configured){% endif %}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="panel controls" aria-label="Generation controls">
+      <div class="input-row">
+        <button id="upload-btn" class="icon-btn" type="button" title="Upload a photograph">+</button>
+        <input id="file-input" type="file" accept="image/*" hidden />
+        <textarea id="prompt" rows="3"
+          placeholder="Describe what you want to create or change"></textarea>
+      </div>
+
+      <div id="upload-status" class="upload-status" hidden></div>
+
+      <div id="face-panel" class="face-panel" hidden>
+        <div class="face-panel-head">
+          <span id="face-count">Faces detected: 0</span>
+          <span id="detector-state" class="hint"></span>
+        </div>
+        <div id="face-list" class="face-list"></div>
+      </div>
+
+      <div class="control-grid">
+        <label for="style">Style</label>
+        <select id="style">
+          {% for s in styles %}
+          <option value="{{ s.key }}" {% if s.key == default_style %}selected{% endif %}>{{ s.label }}</option>
+          {% endfor %}
+        </select>
+
+        <label for="composition">Composition</label>
+        <select id="composition">
+          {% for c in compositions %}
+          <option value="{{ c.key }}">{{ c.label }}</option>
+          {% endfor %}
+        </select>
+
+        <label for="aspect-ratio">Aspect Ratio</label>
+        <select id="aspect-ratio">
+          {% for a in aspect_ratios %}
+          <option value="{{ a }}">{{ a }}</option>
+          {% endfor %}
+        </select>
+
+        <label for="face-strength">Face Preservation</label>
+        <select id="face-strength">
+          <option value="off">Off</option>
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high" selected>High</option>
+          <option value="maximum">Maximum</option>
+        </select>
+
+        <label for="number-of-images">Images</label>
+        <select id="number-of-images">
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3" selected>3</option>
+          <option value="4">4</option>
+        </select>
+      </div>
+
+      <div class="checkboxes">
+        <label class="checkbox" title="Attempts to preserve the person's facial identity while applying the requested visual transformation. Actual results depend on the selected image-generation provider.">
+          <input type="checkbox" id="preserve-face" checked />
+          <span>Preserve Face Identity</span>
+        </label>
+        <label class="checkbox" title="Attempts to keep face position, head position, body pose, camera angle and framing.">
+          <input type="checkbox" id="preserve-composition" />
+          <span>Preserve Composition</span>
+        </label>
+        <label class="checkbox" title="Attempts to keep the person's original expression unless your prompt explicitly requests a different one.">
+          <input type="checkbox" id="preserve-expression" />
+          <span>Preserve Expression</span>
+        </label>
+      </div>
+
+      <p id="capability-note" class="capability-note" role="status"></p>
+
+      <div class="actions">
+        <button id="generate-btn" class="primary" type="button">Generate</button>
+        <button id="preview-btn" class="secondary" type="button">Preview prompt</button>
+      </div>
+
+      <pre id="prompt-preview" class="prompt-preview" hidden></pre>
+    </section>
+
+    <section class="panel results" aria-label="Generated images">
+      <h2>Generated Images</h2>
+      <div id="error" class="error" hidden role="alert"></div>
+      <div id="gallery" class="gallery">
+        <p class="placeholder">Generated images will appear here.</p>
+      </div>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+AIImageStudio/
+__pycache__/
+*.pyc
+.pytest_cache/
+.agent_tmp/

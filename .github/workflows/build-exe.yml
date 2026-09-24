@@ -74,6 +74,39 @@ jobs:
             if ($home_.Content -notmatch "Face Preservation") {
               throw "GUI did not render the face-preservation controls"
             }
+            # The capability contract must survive packaging: cloud creates from
+            # the prompt, local preserves the face, and each reports its limits.
+            $cfg = ($r.Content | ConvertFrom-Json)
+            $providers = @{}
+            foreach ($p in $cfg.providers) { $providers[$p.name] = $p }
+            if (-not $providers.ContainsKey("cloud")) { throw "cloud provider missing from the bundle" }
+            if (-not $providers["cloud"].capabilities.honors_prompt) {
+              throw "cloud provider must report that it interprets the prompt"
+            }
+            if (-not $providers["local"].capabilities.supports_face_preservation) {
+              throw "local provider must report face-preservation support"
+            }
+            if ($providers["local"].capabilities.honors_prompt) {
+              throw "local provider must not claim to interpret the prompt"
+            }
+            if ($cfg.default_provider -ne "cloud") {
+              throw "expected the generative cloud provider to be the default"
+            }
+            # A real generation through the packaged exe: the prompt must travel
+            # over the wire and a decodable image must come back. This is the
+            # end-to-end check that "nothing is created" cannot regress.
+            $body = @{ prompt = "a red apple on a wooden table"; style = "oil_painting_realism"; number_of_images = 1; provider = "cloud" } | ConvertTo-Json
+            $gen = Invoke-WebRequest -Uri "http://127.0.0.1:12300/api/generate" -Method POST -Body $body -ContentType "application/json" -UseBasicParsing -TimeoutSec 180
+            if ($gen.StatusCode -ne 200) { throw "generation returned HTTP $($gen.StatusCode)" }
+            $gdata = ($gen.Content | ConvertFrom-Json)
+            if (-not $gdata.image_urls -or $gdata.image_urls.Count -lt 1) {
+              throw "generation returned no images"
+            }
+            $img = Invoke-WebRequest -Uri ("http://127.0.0.1:12300" + $gdata.image_urls[0]) -UseBasicParsing -TimeoutSec 30
+            if ($img.RawContentLength -lt 1000) {
+              throw "generated image is suspiciously small ($($img.RawContentLength) bytes)"
+            }
+            Write-Host "Generated $($gdata.image_urls[0]) ($($img.RawContentLength) bytes)"
             Write-Host "Smoke test OK"
           } finally {
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue

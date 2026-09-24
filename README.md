@@ -32,10 +32,11 @@ Configuration (all optional):
 | `AIS_PORT` | `12000` | HTTP port |
 | `AIS_HOST` | `0.0.0.0` | Bind address |
 | `AIS_OUTPUT_DIR` | `./AIImageStudio` | Where originals and results are stored |
-| `AIS_PROVIDER` | `local` | Default backend |
+| `AIS_PROVIDER` | `cloud` | Default backend |
 | `AIS_IDENTITY_CHECK` | `1` | Run the post-generation identity check |
 | `AIS_OPEN_BROWSER` | `0` source / `1` exe | Open the GUI in a browser on start |
 | `IMAGE_API_URL` / `IMAGE_API_KEY` | – | Endpoint and key for the remote backend |
+| `IMAGE_GEN_URL` / `IMAGE_GEN_MODEL` | hosted default / `flux` | Endpoint and model for the cloud backend |
 
 ### Windows executable
 
@@ -71,30 +72,53 @@ python -m pytest tests/ -q
 
 This is the most important thing to understand about this application.
 
-### The `local` provider — genuine identity preservation
+### The `cloud` provider — creates what you describe
 
-The bundled OpenCV provider transforms the image spatially, then **composites
-the original face region back over the stylised result** through a feathered
-mask. The person's real facial pixels survive the style change, so identity is
-preserved as a matter of fact, not as a prompt request.
+The `cloud` provider is the default. It sends your prompt to a hosted
+text-to-image model, so a request like *"chinese prince wearing a black robe and
+a gold crown"* produces a **newly generated image** rather than a filter over
+your photo.
 
-Verified on the test fixtures: at `Maximum` strength the mean absolute
-difference between the generated and original face pixels is ~1.6 (out of 255),
-versus ~34 with preservation off.
+Its one real limitation is stated plainly: the hosted model accepts **no
+reference image**, so it cannot be handed a specific person's face. When you
+upload a photo, the subject is carried across in the prompt instead, and the
+provider reports `supports_face_preservation = False`. The GUI then says
+identity preservation is *best-effort* rather than promising a likeness.
 
-The `Face Preservation` strength controls two things at once:
+Point it at your own endpoint with `IMAGE_GEN_URL` / `IMAGE_GEN_MODEL`; a
+backend that accepts a reference image can implement `supports_face_preservation
+= True` and use `context.original_image` directly.
 
-| Strength | Face kept | Style strength |
+### The `local` provider — real face compositing, preset styles only
+
+The bundled OpenCV provider transforms the image spatially, then **blends the
+original face region back over the stylised result** through a feathered mask.
+The person's real facial pixels survive the style change, so identity is
+preserved as a matter of fact, not as a prompt request. At `Maximum` strength
+the face is pulled almost fully back toward the original.
+
+Two honest caveats:
+
+* It applies the selected **style preset**. It does **not** read the prompt
+  text (`honors_prompt = False`) and cannot invent new people, clothing or
+  objects — use `cloud` for that.
+* Styling still reaches the face. Style and identity are separate concerns, so
+  the face is blended *toward* the original rather than copied wholesale;
+  otherwise a close-up portrait would come back looking untouched.
+
+The `Face Preservation` strength controls how strongly identity is pinned:
+
+| Strength | Face pulled toward original | Style strength |
 | --- | --- | --- |
-| Low | softly blended | strongest |
+| Low | softly | strongest |
 | Medium | more | strong |
 | High | most | moderate |
-| Maximum | almost untouched | gentlest |
+| Maximum | almost fully | gentlest |
 
 Because the transform is spatial and local, `Preserve Composition` and
 `Preserve Expression` are inherently satisfied for this provider.
 
-### The `remote` provider — honest about its limits
+### The `remote` provider — for a backend you host
 
 The remote provider only claims identity preservation when the backend
 actually reports that it supports it (via a `capabilities` object). When it
@@ -104,10 +128,9 @@ never as merely a prompt instruction.
 When the backend does *not* report support:
 
 * `supports_face_preservation()` returns `False`
-* the GUI **disables** the Preserve Face controls rather than pretending
-* the strength selector collapses to `Off`
 * the prompt builder records an explicit warning that preservation is
   prompt-only and not guaranteed
+* the GUI explains the limitation rather than pretending the control works
 
 ### What the application refuses to do
 
@@ -195,7 +218,7 @@ class ImageProvider:
 `supports_face_preservation`, `supports_reference_image`,
 `supports_multiple_faces`, `supports_composition_control`,
 `supports_expression_control`, `supports_identity_check`,
-`supports_negative_prompt`, `supports_seed`, `is_remote`,
+`supports_negative_prompt`, `supports_seed`, `honors_prompt`, `is_remote`,
 `max_images_per_request`, `strength_mapping`, `notes`.
 
 The GUI reads `/api/config` and disables every control the selected backend
@@ -207,6 +230,7 @@ There is no universal prompt. Each provider is mapped to a dialect and only
 receives clauses it understands:
 
 * `local` → `stable_diffusion` (comma-separated tags)
+* `cloud` → `stable_diffusion` (comma-separated tags)
 * `remote` → `openai` (prose)
 * fallback → `generic`
 
@@ -275,6 +299,7 @@ ai_image_studio/
   app.py                  Flask app factory and HTTP API
   providers/
     base.py               ImageProvider abstraction
+    cloud_provider.py     hosted text-to-image generation (prompt-driven)
     local_provider.py     OpenCV provider with real face compositing
     remote_provider.py    capability-aware HTTP client
     registry.py           provider registry
@@ -293,7 +318,7 @@ packaging/
   build_exe.sh            Wine-based cross build for Linux hosts
 .github/workflows/
   build-exe.yml           native Windows build, smoke test and release upload
-tests/                    62 tests covering pipeline, API, packaging and
+tests/                    72 tests covering pipeline, API, cloud provider, packaging and
                           honesty rules
 ```
 

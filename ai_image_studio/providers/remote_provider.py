@@ -55,6 +55,8 @@ class RemoteImageProvider(ImageProvider):
             supports_identity_check=bool(remote.get("supports_identity_check", False)),
             supports_negative_prompt=bool(remote.get("supports_negative_prompt", True)),
             supports_seed=bool(remote.get("supports_seed", True)),
+            # The prompt is forwarded verbatim to the backend.
+            honors_prompt=True,
             is_remote=True,
             max_images_per_request=int(remote.get("max_images_per_request", 4)),
             strength_mapping=self._strength_mapping(identity),

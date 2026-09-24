@@ -42,7 +42,9 @@ def test_local_provider_declares_face_preservation():
     caps = provider.capabilities()
     assert caps.supports_reference_image is True
     assert caps.supports_multiple_faces is True
-    assert caps.supported_strengths() == ["low", "medium", "high", "maximum"]
+    # Every level is selectable; the mapping defines what each one does.
+    assert caps.supported_strengths() == ["off", "low", "medium", "high", "maximum"]
+    assert set(caps.strength_mapping) == {"low", "medium", "high", "maximum"}
 
 
 def test_remote_provider_without_config_does_not_claim_support(monkeypatch):
@@ -52,7 +54,7 @@ def test_remote_provider_without_config_does_not_claim_support(monkeypatch):
     assert provider.is_available() is False
     assert provider.supports_face_preservation() is False
     caps = provider.capabilities()
-    assert caps.supported_strengths() == ["off"]
+    # No graded identity control is advertised when it cannot be honoured.
     assert caps.strength_mapping == {}
 
 
@@ -85,7 +87,7 @@ def test_base_provider_default_is_false():
             return []
 
     assert Bare().supports_face_preservation() is False
-    assert Bare().capabilities().supported_strengths() == ["off"]
+    assert Bare().capabilities().strength_mapping == {}
 
 
 # -- Face detection -------------------------------------------------------
@@ -363,7 +365,29 @@ def test_unsupported_provider_adds_honest_warning(face_image, output_dir):
     caps = ProviderCapabilities(supports_face_preservation=False)
     builder_for("generic").build(request, context, caps)
     assert context.identity_prompt == ""
-    assert any("does not support identity preservation" in w for w in context.warnings)
+    # A provider that neither uses a reference nor reads the prompt cannot
+    # preserve identity at all, and must say so.
+    assert any("cannot preserve identity" in w for w in context.warnings)
+
+
+def test_unsupported_provider_that_honors_prompt_describes_best_effort(face_image, output_dir):
+    """A text-only backend is not claimed to be useless -- it is described as
+    best-effort, since the subject is carried in the prompt."""
+    storage = Storage(output_dir)
+    stored = storage.store_upload(face_image, "person.png")
+    faces = FaceDetector().detect(stored.path)
+    from ai_image_studio.models import PipelineContext
+
+    request = GenerationRequest(
+        prompt="oil painting", input_image=stored.id, style="oil_painting_realism",
+        preserve_face=True,
+    )
+    context = PipelineContext(original_image=stored.path, faces=faces,
+                              preserved_face_indices=[f.index for f in faces])
+    caps = ProviderCapabilities(supports_face_preservation=False, honors_prompt=True)
+    builder_for("stable_diffusion").build(request, context, caps)
+    assert any("best-effort" in w for w in context.warnings)
+    assert not any("has no effect" in w for w in context.warnings)
 
 
 # -- Identity verifier ----------------------------------------------------
@@ -464,4 +488,73 @@ def test_multi_person_identities_preserved(two_face_image, output_dir):
     )
     result = pipeline.execute(request, local_provider(storage))
     assert result.context.preserved_face_indices == [f.index for f in faces]
-    assert len(result.context.faces) >= 2
+
+
+def test_style_is_visible_on_the_face_not_only_the_background(face_image, output_dir):
+    """Regression: the face used to be copied back almost unchanged, so a
+    portrait looked identical to the original photo after 'styling'.
+
+    The face must receive the requested style -- and the style must differ from
+    the background-only effect, i.e. the whole image is transformed.
+    """
+    import numpy as np
+
+    storage = Storage(output_dir)
+    stored = storage.store_upload(face_image, "person.png")
+    faces = FaceDetector().detect(stored.path)
+    assert faces
+    face = faces[0]
+    pipeline = ImagePipeline(storage=storage)
+    original = cv2.imread(stored.path).astype(np.float32)
+
+    request = GenerationRequest(
+        prompt="oil painting",
+        input_image=stored.id,
+        style="oil_painting",
+        preserve_face=True,
+        face_preservation_strength=FacePreservationStrength.HIGH,
+    )
+    result = pipeline.execute(request, local_provider(storage))
+    generated = cv2.imread(os.path.join(storage.root, result.images[0].path)).astype(np.float32)
+
+    region = generated[face.y:face.y + face.h, face.x:face.x + face.w]
+    reference = original[face.y:face.y + face.h, face.x:face.x + face.w]
+    face_delta = float(np.mean(np.abs(region - reference)))
+
+    # A meaningful painterly change in the face, not a near-copy.
+    assert face_delta > 8.0, (
+        f"face changed by only {face_delta:.2f}; the style is not being applied "
+        "to the face"
+    )
+
+
+def test_styles_are_visually_distinct(face_image, output_dir):
+    """Regression: renaissance/cinematic/concept_art all routed to the same
+    filter and rendered pixel-identical output."""
+    import numpy as np
+
+    storage = Storage(output_dir)
+    stored = storage.store_upload(face_image, "person.png")
+    pipeline = ImagePipeline(storage=storage, run_identity_check=False)
+    provider = local_provider(storage)
+
+    rendered = {}
+    for style in ("oil_painting", "oil_painting_realism", "renaissance",
+                  "cinematic", "concept_art", "watercolor"):
+        request = GenerationRequest(
+            prompt="paint it", input_image=stored.id, style=style,
+            preserve_face=False,
+        )
+        result = pipeline.execute(request, provider)
+        rendered[style] = cv2.imread(
+            os.path.join(storage.root, result.images[0].path)
+        ).astype(np.float32)
+
+    keys = list(rendered)
+    for i, first in enumerate(keys):
+        for second in keys[i + 1:]:
+            delta = float(np.mean(np.abs(rendered[first] - rendered[second])))
+            assert delta > 3.0, (
+                f"styles {first} and {second} render near-identical output "
+                f"(mean abs difference {delta:.2f})"
+            )

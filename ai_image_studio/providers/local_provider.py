@@ -56,20 +56,25 @@ class LocalStyleProvider(ImageProvider):
             supports_expression_control=True,
             supports_identity_check=True,
             supports_negative_prompt=False,
-            supports_seed=True,
+            supports_seed=False,
+            # The local renderer applies a preset OpenCV style; it does not read
+            # the prompt text, so it must not claim to.
+            honors_prompt=False,
             is_remote=False,
             max_images_per_request=8,
             strength_mapping={
-                "low": {"face_blend": 0.55, "style_strength": 1.0},
-                "medium": {"face_blend": 0.75, "style_strength": 0.85},
-                "high": {"face_blend": 0.88, "style_strength": 0.7},
-                "maximum": {"face_blend": 0.96, "style_strength": 0.5},
+                "low": {"face_blend": 0.35, "style_strength": 1.0},
+                "medium": {"face_blend": 0.55, "style_strength": 0.9},
+                "high": {"face_blend": 0.75, "style_strength": 0.8},
+                "maximum": {"face_blend": 0.98, "style_strength": 0.7},
             },
             notes=[
-                "Local rendering preserves identity by keeping the original "
-                "face pixels and styling the rest of the image.",
-                "Face preservation works best on clearly visible, frontal "
-                "faces.",
+                "Local rendering applies the selected style to your whole photo "
+                "and blends the original face back to keep the person "
+                "recognisable.",
+                "This backend does not interpret the prompt text and cannot add "
+                "new people, objects or clothing. Use the Cloud provider for that.",
+                "Face preservation works best on clearly visible, frontal faces.",
             ],
         )
 
@@ -118,11 +123,17 @@ class LocalStyleProvider(ImageProvider):
         if style == "pencil_sketch":
             return self._pencil(image, strength)
         if style == "charcoal":
-            return self._pencil(image, min(1.0, strength + 0.2), dark=True)
+            return self._pencil(image, min(1.0, strength + 0.3), dark=True)
         if style == "oil_painting":
-            return self._oil(image, strength, strong=True)
-        if style in ("oil_painting_realism", "renaissance", "cinematic", "concept_art"):
             return self._oil(image, strength)
+        if style == "oil_painting_realism":
+            return self._oil_realism(image, strength)
+        if style == "renaissance":
+            return self._renaissance(image, strength)
+        if style == "cinematic":
+            return self._cinematic(image, strength)
+        if style == "concept_art":
+            return self._concept_art(image, strength)
         if style == "watercolor":
             return self._watercolor(image, strength)
         if style == "anime":
@@ -135,13 +146,78 @@ class LocalStyleProvider(ImageProvider):
             return self._digital(image, strength)
         if style == "fantasy":
             return self._fantasy(image, strength)
-        return self._oil(image, strength * 0.5)
+        return self._oil(image, strength * 0.75)
 
-    def _oil(self, image: np.ndarray, strength: float, strong: bool = False) -> np.ndarray:
-        radius = 8 if strong else 5
-        styled = cv2.stylization(image, sigma_s=int(20 + strength * 40), sigma_r=0.45)
-        styled = cv2.bilateralFilter(styled, d=radius, sigmaColor=80, sigmaSpace=80)
-        return self._blend(image, styled, 0.5 + 0.5 * strength)
+    def _oil(self, image: np.ndarray, strength: float) -> np.ndarray:
+        """Visible brushwork: heavy edge-preserving smoothing plus a dappled
+        texture layer, so the painterly effect is unmistakable."""
+        styled = cv2.stylization(image, sigma_s=int(30 + strength * 70), sigma_r=0.35)
+        styled = cv2.bilateralFilter(styled, d=9, sigmaColor=90, sigmaSpace=90)
+        styled = self._brush_texture(styled, strength)
+        return self._blend(image, styled, 0.75 + 0.25 * strength)
+
+    def _oil_realism(self, image: np.ndarray, strength: float) -> np.ndarray:
+        """Painterly but lifelike: lighter smoothing and a gentle texture."""
+        styled = cv2.stylization(image, sigma_s=int(20 + strength * 35), sigma_r=0.45)
+        styled = cv2.bilateralFilter(styled, d=7, sigmaColor=70, sigmaSpace=70)
+        styled = self._brush_texture(styled, strength * 0.45)
+        return self._blend(image, styled, 0.6 + 0.3 * strength)
+
+    def _renaissance(self, image: np.ndarray, strength: float) -> np.ndarray:
+        """Chiaroscuro: deep shadows, warm earth tones, visible brushwork."""
+        styled = cv2.stylization(image, sigma_s=int(35 + strength * 60), sigma_r=0.3)
+        styled = self._brush_texture(styled, strength)
+        warm = cv2.transform(
+            styled, np.array([[0.72, 0.42, 0.16], [0.38, 0.68, 0.14], [0.24, 0.56, 0.20]])
+        )
+        warm = np.clip(warm, 0, 255).astype(np.uint8)
+        # Lift contrast for the dramatic light/shadow of the period.
+        contrast = cv2.convertScaleAbs(warm, alpha=1.25, beta=-28)
+        return self._blend(image, contrast, 0.8 + 0.2 * strength)
+
+    def _cinematic(self, image: np.ndarray, strength: float) -> np.ndarray:
+        """Teal-and-orange grade with lifted contrast and a soft vignette."""
+        smooth = cv2.bilateralFilter(image, d=7, sigmaColor=60, sigmaSpace=60)
+        lab = cv2.cvtColor(smooth, cv2.COLOR_BGR2LAB).astype(np.float32)
+        lab[..., 1] = np.clip(lab[..., 1] + 14 * strength, 0, 255)   # +green/magenta
+        lab[..., 2] = np.clip(lab[..., 2] + 18 * strength, 0, 255)   # +blue/yellow
+        graded = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
+        graded = cv2.convertScaleAbs(graded, alpha=1.2, beta=-14)
+        graded = self._vignette(graded, 0.55)
+        return self._blend(image, graded, 0.78 + 0.22 * strength)
+
+    def _concept_art(self, image: np.ndarray, strength: float) -> np.ndarray:
+        """Bold painterly rendering: strong smoothing, high contrast, vivid colour."""
+        styled = cv2.stylization(image, sigma_s=int(45 + strength * 60), sigma_r=0.3)
+        styled = self._brush_texture(styled, strength)
+        vivid = cv2.convertScaleAbs(styled, alpha=1.25, beta=-12)
+        hsv = cv2.cvtColor(vivid, cv2.COLOR_BGR2HSV).astype(np.float32)
+        hsv[..., 1] = np.clip(hsv[..., 1] * (1.2 + 0.4 * strength), 0, 255)
+        vivid = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+        return self._blend(image, vivid, 0.8 + 0.2 * strength)
+
+    @staticmethod
+    def _brush_texture(image: np.ndarray, strength: float) -> np.ndarray:
+        """Overlay a fixed-seed dapple that reads as brush/impasto strokes."""
+        if strength <= 0:
+            return image
+        h, w = image.shape[:2]
+        rng = np.random.default_rng(20240517)
+        noise = rng.normal(128.0, 26.0, (h, w)).astype(np.float32)
+        strokes = cv2.GaussianBlur(noise, (0, 0), sigmaX=2.2)[..., None]
+        amount = 0.16 * float(np.clip(strength, 0.0, 1.0))
+        textured = image.astype(np.float32) * (1.0 - amount) + strokes * amount
+        return np.clip(textured, 0, 255).astype(np.uint8)
+
+    @staticmethod
+    def _vignette(image: np.ndarray, amount: float) -> np.ndarray:
+        h, w = image.shape[:2]
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
+        radius = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+        radius /= max(radius.max(), 1.0)
+        mask = np.clip(1.0 - amount * radius**2, 0.0, 1.0)[..., None]
+        return np.clip(image.astype(np.float32) * mask, 0, 255).astype(np.uint8)
 
     def _pencil(self, image: np.ndarray, strength: float, dark: bool = False) -> np.ndarray:
         gray, color = cv2.pencilSketch(
@@ -149,14 +225,14 @@ class LocalStyleProvider(ImageProvider):
         )
         base = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
         if dark:
-            base = cv2.convertScaleAbs(base, alpha=0.75, beta=-10)
-        return self._blend(image, base, 0.6 + 0.4 * strength)
+            base = cv2.convertScaleAbs(base, alpha=0.7, beta=-18)
+        return self._blend(image, base, 0.75 + 0.25 * strength)
 
     def _watercolor(self, image: np.ndarray, strength: float) -> np.ndarray:
-        styled = cv2.stylization(image, sigma_s=60, sigma_r=0.25)
-        styled = cv2.bilateralFilter(styled, d=9, sigmaColor=120, sigmaSpace=120)
-        bright = cv2.convertScaleAbs(styled, alpha=1.08, beta=12)
-        return self._blend(image, bright, 0.5 + 0.5 * strength)
+        styled = cv2.stylization(image, sigma_s=70, sigma_r=0.2)
+        styled = cv2.bilateralFilter(styled, d=11, sigmaColor=140, sigmaSpace=140)
+        bright = cv2.convertScaleAbs(styled, alpha=1.12, beta=18)
+        return self._blend(image, bright, 0.7 + 0.3 * strength)
 
     def _anime(self, image: np.ndarray, strength: float) -> np.ndarray:
         smooth = cv2.bilateralFilter(image, d=11, sigmaColor=120, sigmaSpace=120)
@@ -166,9 +242,9 @@ class LocalStyleProvider(ImageProvider):
             cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 9, 9,
         )
         edges = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
-        saturated = cv2.convertScaleAbs(smooth, alpha=1.25, beta=10)
+        saturated = cv2.convertScaleAbs(smooth, alpha=1.3, beta=12)
         cel = cv2.bitwise_and(saturated, edges)
-        return self._blend(image, cel, 0.55 + 0.45 * strength)
+        return self._blend(image, cel, 0.7 + 0.3 * strength)
 
     def _cartoon(self, image: np.ndarray, strength: float) -> np.ndarray:
         smooth = cv2.bilateralFilter(image, d=15, sigmaColor=140, sigmaSpace=140)
@@ -176,7 +252,7 @@ class LocalStyleProvider(ImageProvider):
         edges = cv2.Canny(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), 80, 180)
         edges = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
         shapes = cv2.bitwise_and(quantised, cv2.bitwise_not(edges))
-        return self._blend(image, shapes, 0.5 + 0.5 * strength)
+        return self._blend(image, shapes, 0.75 + 0.25 * strength)
 
     def _vintage(self, image: np.ndarray, strength: float) -> np.ndarray:
         sepia_kernel = np.array(
@@ -187,20 +263,23 @@ class LocalStyleProvider(ImageProvider):
         faded = cv2.convertScaleAbs(sepia, alpha=0.9, beta=18)
         noise = np.random.default_rng(1234).normal(0, 6, faded.shape)
         grainy = np.clip(faded.astype(np.float32) + noise, 0, 255).astype(np.uint8)
-        return self._blend(image, grainy, 0.4 + 0.6 * strength)
+        return self._blend(image, grainy, 0.7 + 0.3 * strength)
 
     def _digital(self, image: np.ndarray, strength: float) -> np.ndarray:
         smooth = cv2.bilateralFilter(image, d=9, sigmaColor=90, sigmaSpace=90)
         vivid = cv2.convertScaleAbs(smooth, alpha=1.15, beta=5)
         hsv = cv2.cvtColor(vivid, cv2.COLOR_BGR2HSV).astype(np.float32)
-        hsv[..., 1] = np.clip(hsv[..., 1] * (1.1 + 0.3 * strength), 0, 255)
-        return self._blend(image, cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR), 0.5 + 0.5 * strength)
+        hsv[..., 1] = np.clip(hsv[..., 1] * (1.25 + 0.4 * strength), 0, 255)
+        return self._blend(
+            image, cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR),
+            0.7 + 0.3 * strength,
+        )
 
     def _fantasy(self, image: np.ndarray, strength: float) -> np.ndarray:
         stylised = cv2.stylization(image, sigma_s=70, sigma_r=0.4)
         glow = cv2.GaussianBlur(stylised, (0, 0), sigmaX=6)
-        glowed = cv2.addWeighted(stylised, 0.75, glow, 0.35, 8)
-        return self._blend(image, glowed, 0.5 + 0.5 * strength)
+        glowed = cv2.addWeighted(stylised, 0.8, glow, 0.45, 12)
+        return self._blend(image, glowed, 0.7 + 0.3 * strength)
 
     @staticmethod
     def _blend(original: np.ndarray, styled: np.ndarray, amount: float) -> np.ndarray:
@@ -215,9 +294,13 @@ class LocalStyleProvider(ImageProvider):
         context: PipelineContext,
         face_blend: float,
     ) -> np.ndarray:
-        """Blend the original face region back over the stylised image.
+        """Reinforce identity by blending the *styled* face back toward the
+        original through a feathered mask.
 
-        This is the local provider's real identity-preservation mechanism.
+        The face must still receive the requested style -- copying the original
+        face in wholesale was what previously made a portrait look unchanged.
+        ``face_blend`` is how strongly the original facial structure is pulled
+        back over the stylised pixels; the styling is never undone completely.
         """
         result = styled.copy()
         selected = set(context.preserved_face_indices or [f.index for f in context.faces])
@@ -235,15 +318,18 @@ class LocalStyleProvider(ImageProvider):
             y1 = min(height, face.y + face.h + pad_y)
             if x1 <= x0 or y1 <= y0:
                 continue
-            face_region = original[y0:y1, x0:x1]
-            styled_region = result[y0:y1, x0:x1]
+            face_region = original[y0:y1, x0:x1].astype(np.float32)
+            styled_region = result[y0:y1, x0:x1].astype(np.float32)
             mask = self._feather_mask(face_region.shape[:2])[..., None]
-            blended = (
-                face_region.astype(np.float32) * (face_blend * mask)
-                + styled_region.astype(np.float32) * (1.0 - face_blend * mask)
-            )
+            # ``face_blend`` is how strongly identity is pinned.  Even at the
+            # top setting the styled pixels stay in the majority at the centre
+            # of the face -- otherwise the "painting" would be invisible on a
+            # close-up portrait, which is exactly the bug this replaces.
+            style_keep = float(np.clip(1.0 - 0.55 * face_blend, 0.3, 1.0))
+            blended = face_region * (1.0 - style_keep * mask) + styled_region * (style_keep * mask)
             result[y0:y1, x0:x1] = np.clip(blended, 0, 255).astype(np.uint8)
         return result
+
 
     @staticmethod
     def _feather_mask(shape: tuple[int, int], margin: float = 0.18) -> np.ndarray:

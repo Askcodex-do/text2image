@@ -104,6 +104,11 @@ class ProviderCapabilities:
     supports_identity_check: bool = False
     supports_negative_prompt: bool = False
     supports_seed: bool = False
+    #: Whether the backend actually interprets the user's prompt text.  A local
+    #: filter pipeline renders a preset style and ignores the wording, so it must
+    #: report ``False`` here; otherwise the UI would pretend free text has an
+    #: effect it cannot have.
+    honors_prompt: bool = False
     is_remote: bool = False
     max_images_per_request: int = 4
     #: Provider-specific mapping from strength level -> provider parameters.
@@ -112,11 +117,15 @@ class ProviderCapabilities:
     notes: list[str] = field(default_factory=list)
 
     def supported_strengths(self) -> list[str]:
-        if not self.supports_face_preservation:
-            return [FacePreservationStrength.OFF.value]
-        mapping = self.strength_mapping or {}
-        levels = [s.value for s in _STRENGTH_ORDER if s is not FacePreservationStrength.OFF]
-        return [level for level in levels if level in mapping] or levels
+        """The selectable strength levels.
+
+        Every level is offered because the control expresses user *intent*; what
+        each level actually does is provider-defined via ``strength_mapping``
+        (which may be empty when a backend has no graded control).  Honesty
+        about what a backend can deliver lives in the capability flags and
+        ``notes``, not in hiding the options.
+        """
+        return [s.value for s in _STRENGTH_ORDER]
 
     def strength_params(self, strength: FacePreservationStrength) -> dict[str, Any]:
         return dict((self.strength_mapping or {}).get(strength.value, {}))

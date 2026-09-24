@@ -55,6 +55,9 @@ datas = [
 datas += collect_data_files("cv2", includes=["data/*.xml"])
 
 hiddenimports = collect_submodules("click")
+# Bundle every application submodule so a newly added provider or service is
+# never missed by static analysis.
+hiddenimports += collect_submodules("ai_image_studio")
 # Tkinter is imported lazily inside a function; make sure it is always bundled
 # even though static analysis cannot see the import.
 hiddenimports += [

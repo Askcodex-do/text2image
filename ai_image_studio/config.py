@@ -46,7 +46,7 @@ class AppConfig:
     output_dir: str = ""
     host: str = "0.0.0.0"
     port: int = 12000
-    default_provider: str = "local"
+    default_provider: str = "cloud"
     run_identity_check: bool = True
     debug: bool = False
 
@@ -56,7 +56,7 @@ class AppConfig:
             output_dir=default_output_dir(),
             host=os.environ.get("AIS_HOST", "0.0.0.0"),
             port=int(os.environ.get("AIS_PORT", "12000")),
-            default_provider=os.environ.get("AIS_PROVIDER", "local"),
+            default_provider=os.environ.get("AIS_PROVIDER", "cloud"),
             run_identity_check=os.environ.get("AIS_IDENTITY_CHECK", "1") != "0",
             debug=os.environ.get("AIS_DEBUG", "0") == "1",
         )

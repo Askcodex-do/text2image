@@ -6,6 +6,14 @@ AI Image Studio — Flask app for image generation/editing whose pipeline
 separates IDENTITY from CONTENT from STYLE so a person's identity can be
 preserved across a style transformation.
 
+Three providers, with different honest trade-offs:
+
+- `cloud` (default) — hosted text-to-image; actually creates what the prompt
+  describes, but takes no reference image, so identity is best-effort.
+- `local` — OpenCV; real face compositing preserves identity, but applies a
+  preset style and ignores the prompt text.
+- `remote` — capability-aware HTTP client for a backend you host.
+
 ## Commands
 
 - Run (browser GUI): `python run.py` (defaults to port 12000, honors `AIS_PORT`)
@@ -58,8 +66,20 @@ preserved across a style transformation.
 - The identity check is NON-BIOMETRIC (`IdentityCheckResult.biometric` is
   always False). Never present its score as proof of identity.
 - A provider must never claim a capability it lacks. `supports_face_preservation`
-  gates the GUI controls; when False the controls are disabled and a warning is
-  recorded, never silently pretended.
+  gates the identity claim, and `honors_prompt` says whether the backend reads
+  the prompt text. The local OpenCV provider reports `honors_prompt = False`
+  (it applies a preset style only); the cloud provider reports
+  `supports_face_preservation = False` (the hosted endpoint takes no reference
+  image). Report both honestly rather than letting the UI imply more.
+- Identity and style are separate concerns. The local provider blends the
+  original face *toward* the stylised result; do not copy the original face back
+  wholesale, or a close-up portrait comes back looking unstyled (this was a real
+  bug). Each style must route to its own filter -- renaissance, cinematic and
+  concept_art previously shared one and rendered identical output.
+- A provider that cannot preserve a reference face must still work: it applies
+  the style / generates from the prompt and the pipeline records a best-effort
+  warning. Only a provider that neither uses a reference nor reads the prompt
+  gets the "has no effect" warning.
 - Prompt building is provider-specific (dialects: `stable_diffusion`, `openai`,
   `generic`). Do not introduce one universal prompt.
 - Face detection is optional; absence of a face must never fail a request.

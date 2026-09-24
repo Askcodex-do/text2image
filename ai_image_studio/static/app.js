@@ -48,16 +48,20 @@
     return state.providers[el.provider.value] || null;
   }
 
-  /* Apply provider capabilities to the UI: disable controls that can have no
-   * effect and explain why, rather than pretending they work. */
+  /* Apply provider capabilities to the UI: explain what the selected backend
+   * can and cannot do, rather than pretending a control does more than it can.
+   *
+   * Preserve Face stays enabled even without reference-image support: the
+   * setting still shapes the prompt, it just cannot guarantee a likeness. The
+   * note below says so explicitly. */
   function applyCapabilities() {
     const provider = currentProvider();
     if (!provider) return;
     const caps = provider.capabilities;
 
     const faceSupported = caps.supports_face_preservation;
-    el.preserveFace.disabled = !faceSupported;
-    el.faceStrength.disabled = !faceSupported;
+    const honorsPrompt = caps.honors_prompt !== false;
+
     el.preserveExpression.disabled = !caps.supports_expression_control;
     el.preserveComposition.disabled = !caps.supports_composition_control;
 
@@ -81,20 +85,29 @@
     if (!provider.available) {
       notes.push(provider.unavailable_reason || "This provider is not configured.");
     }
-    if (!faceSupported) {
+    if (faceSupported) {
       notes.push(
-        "This provider does not support identity preservation. The Preserve " +
-        "Face setting is shown for completeness but has no guaranteed effect."
+        "This provider uses your original image as an identity reference, so " +
+        "the person's face is preserved. Results vary by image and style."
       );
     } else {
       notes.push(
-        "This provider supports identity preservation using the original " +
-        "image as a reference. Results vary by image and style."
+        "This provider does not use your photo as an identity reference, so it " +
+        "cannot guarantee the same face. Preserve Face is best-effort: the " +
+        "subject is described in the prompt only."
+      );
+    }
+    if (!honorsPrompt) {
+      notes.push(
+        "This provider applies the selected style but does not interpret your " +
+        "prompt text, so it cannot add new people, clothing or objects. " +
+        "Choose Cloud for free-text generation."
       );
     }
     (caps.notes || []).forEach((note) => notes.push(note));
     el.capabilityNote.textContent = notes.join(" ");
-    el.capabilityNote.classList.toggle("ok", faceSupported && provider.available);
+    el.capabilityNote.classList.toggle("ok", provider.available && honorsPrompt);
+    el.capabilityNote.classList.toggle("warn", !faceSupported || !honorsPrompt);
   }
 
   async function loadConfig() {

@@ -82,10 +82,19 @@ class PromptBuilder:
         if request.identity_requested() and not getattr(
             provider_caps, "supports_face_preservation", False
         ):
-            context.warnings.append(
-                "The selected provider does not support identity preservation; "
-                "the Preserve Face setting has no effect."
-            )
+            if getattr(provider_caps, "honors_prompt", False):
+                context.warnings.append(
+                    "This provider does not use your photo as an identity "
+                    "reference, so the Preserve Face setting is best-effort: the "
+                    "subject is described in the prompt and a close likeness is "
+                    "not guaranteed."
+                )
+            else:
+                context.warnings.append(
+                    "The selected provider cannot preserve identity: it neither "
+                    "uses a reference image nor interprets the prompt. The "
+                    "Preserve Face setting has no effect."
+                )
 
         expression_override = _collect_user_expression_override(request.prompt)
         preserve_expression = (

@@ -31,6 +31,7 @@ from .storage import Storage
 #: Prompt dialect per provider, so no single universal prompt is used.
 PROVIDER_DIALECTS = {
     "remote": "openai",
+    "cloud": "stable_diffusion",
     "local": "stable_diffusion",
 }
 
@@ -155,6 +156,10 @@ class ImagePipeline:
 
         This flag is what distinguishes *real* identity preservation from a
         prompt-only approximation, and drives the honesty of the UI copy.
+
+        The user-facing warning for a provider that cannot preserve identity is
+        emitted by the prompt builder, which also knows whether the backend
+        interprets the prompt, so no duplicate note is added here.
         """
         context.provider_uses_identity_reference = bool(
             request.identity_requested()
@@ -162,11 +167,6 @@ class ImagePipeline:
             and context.original_image
             and context.faces
         )
-        if request.identity_requested() and not caps.supports_face_preservation:
-            context.warnings.append(
-                "The selected provider applies identity preservation through the "
-                "prompt only; results are not guaranteed."
-            )
 
     def _verify_identity(
         self,

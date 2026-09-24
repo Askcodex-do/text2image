@@ -36,8 +36,15 @@ def test_config_exposes_capabilities(client):
     data = client.get("/api/config").get_json()
     providers = {p["name"]: p for p in data["providers"]}
     assert "local" in providers
+    assert "cloud" in providers
     assert providers["local"]["supports_face_preservation"] is True
     assert providers["remote"]["supports_face_preservation"] is False
+    # The local filter pipeline must not claim to interpret free text, and the
+    # generative cloud backend must.
+    assert providers["local"]["capabilities"]["honors_prompt"] is False
+    assert providers["cloud"]["capabilities"]["honors_prompt"] is True
+    # The generative backend is the default so prompts actually create images.
+    assert data["default_provider"] == "cloud"
     assert data["face_preservation"]["levels"] == [
         "off", "low", "medium", "high", "maximum",
     ]
@@ -157,7 +164,7 @@ def test_preview_prompt_is_provider_specific(client, face_image):
     assert remote["dialect"] == "openai"
     assert remote["uses_identity_reference"] is False
     assert remote["clauses"]["identity"] == ""
-    assert any("does not support identity preservation" in w for w in remote["warnings"])
+    assert any("best-effort" in w for w in remote["warnings"])
     assert remote["effective_prompt"] != local["effective_prompt"]
 
 

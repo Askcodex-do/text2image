@@ -8,18 +8,33 @@ preserved across a style transformation.
 
 ## Commands
 
-- Run: `python run.py` (defaults to port 12000, honors `AIS_PORT`)
+- Run (browser GUI): `python run.py` (defaults to port 12000, honors `AIS_PORT`)
+- Run (windowed launcher): `python run_desktop.py`
 - Test: `python -m pytest tests/ -q`
 - Install: `pip install -r requirements.txt`
 - Build `.exe` (native Windows): `python -m PyInstaller packaging/ai_image_studio.spec --noconfirm`
 - Build `.exe` (Linux cross-build via Wine): `bash packaging/build_exe.sh`
+- Build console `.exe` instead of the windowed one: `AIS_CONSOLE=1 pyinstaller packaging/ai_image_studio.spec --noconfirm`
 - Lint: `python -m pyflakes ai_image_studio tests`
 
 ## Packaging
 
-- The frozen entry point is `run.py`; PyInstaller bundles `templates/` and
-  `static/` as data. `app._resource_dir()` resolves them from `sys._MEIPASS`
+- The frozen entry point is `run_desktop.py` (windowed). `run.py` remains the
+  console/browser entry point for source runs. PyInstaller bundles `templates/`
+  and `static/` as data; `app._resource_dir()` resolves them from `sys._MEIPASS`
   when frozen, so do not hardcode package-relative template paths.
+- The build targets **Python 3.10.11**. The window requires Tcl/Tk, which is
+  absent from the embeddable zip and the NuGet package; only the full CPython
+  installer ships it. `packaging/build_exe.sh` therefore extracts the
+  installer's MSI payload (`a0`=core, `a2`=exe, `a6`=Lib, `a14`=tkinter+tcl/tk)
+  rather than using the embeddable distribution.
+- The spec ships a **windowed** executable (`console=False`, PE subsystem 2):
+  `desktop.run_windowed` shows a Tk window, and closing it calls `quit_()`,
+  which shuts the server down. A windowed build has no stderr, so the launcher
+  logs to `AIImageStudio/app.log`. `tkinter` is imported lazily, so it is listed
+  in `hiddenimports` for PyInstaller's static analysis.
+- A second launch is refused by `single_instance.InstanceLock` and simply opens
+  the running instance's URL in the browser.
 - Output must never default inside the bundle: `config.default_output_dir()`
   writes beside `sys.executable` when frozen. `sys._MEIPASS` is deleted on exit.
 - Face cascades are bundled explicitly and resolved through
@@ -30,7 +45,8 @@ preserved across a style transformation.
   `opencv-python-headless==4.10.0.84` for that reason only; native builds
   (`requirements.txt`) are unaffected.
 - Do not commit build artifacts (`*.exe`, `dist/`, `build/`). Releases are
-  produced by `.github/workflows/build-exe.yml`.
+  produced by `.github/workflows/build-exe.yml`, which pins Python 3.10.11 and
+  asserts the artifact's PE subsystem is 2 (windowed) before releasing.
 
 ## Critical constraints
 

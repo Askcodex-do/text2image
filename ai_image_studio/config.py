@@ -27,6 +27,18 @@ def default_output_dir() -> str:
     return os.path.join(base, _OUTPUT_DIR_NAME)
 
 
+def open_browser_enabled(default: bool) -> bool:
+    """Read ``AIS_OPEN_BROWSER``, falling back to ``default``.
+
+    Each entry point picks its own default: the windowed launcher opens a
+    browser (`True`), while a console run stays in the terminal (`False`).
+    """
+    raw = os.environ.get("AIS_OPEN_BROWSER")
+    if raw is None:
+        return default
+    return raw.strip().lower() not in ("0", "false", "no", "off", "")
+
+
 @dataclass
 class AppConfig:
     """Runtime configuration, populated from environment variables."""
@@ -37,11 +49,9 @@ class AppConfig:
     default_provider: str = "local"
     run_identity_check: bool = True
     debug: bool = False
-    open_browser: bool = False
 
     @classmethod
     def from_env(cls) -> "AppConfig":
-        frozen = getattr(sys, "frozen", False)
         return cls(
             output_dir=default_output_dir(),
             host=os.environ.get("AIS_HOST", "0.0.0.0"),
@@ -49,11 +59,6 @@ class AppConfig:
             default_provider=os.environ.get("AIS_PROVIDER", "local"),
             run_identity_check=os.environ.get("AIS_IDENTITY_CHECK", "1") != "0",
             debug=os.environ.get("AIS_DEBUG", "0") == "1",
-            # A double-clicked executable has no console expectation of opening
-            # a page, so frozen builds open the GUI while source runs do not.
-            open_browser=os.environ.get(
-                "AIS_OPEN_BROWSER", "1" if frozen else "0"
-            ) != "0",
         )
 
     @property

@@ -1,19 +1,29 @@
 #!/usr/bin/env bash
-# Cross-build the Windows executable on Linux using Wine + an embeddable
-# Windows Python. Verified on Debian 13 with Wine 10.0.
+# Cross-build the windowed Windows executable on Linux using Wine.
 #
-#   1. Installs wine64 if missing.
-#   2. Downloads the embeddable Python and adds site/pip.
-#   3. Installs the pinned Windows dependency set.
-#   4. Runs PyInstaller with the project spec.
+# Verified on Debian 13 with Wine 10.0.
 #
-# Usage:  bash packaging/build_exe.sh [python-version]
+#  1. Installs wine64, 7z, cabextract and msitools if missing.
+#  2. Builds a Windows Python by extracting the official CPython installer's
+#     payload (not the embeddable zip, which ships without Tcl/Tk).
+#  3. Installs the pinned Windows dependency set.
+#  4. Runs PyInstaller with the project spec (windowed by default).
+#
+# Usage:
+#   bash packaging/build_exe.sh [python-version]
+#
+# Environment:
+#   EXE_BUILD_DIR   workspace for the download/extract/build (default ~/.ai_image_studio-build)
+#   AIS_CONSOLE=1   build the console variant instead of the windowed GUI build
 set -euo pipefail
 
-PYVER="${1:-3.12.8}"
+# Tkinter is required for the GUI window and only ships with the full CPython
+# installer, so 3.10.11 is the pinned toolchain version.
+PYVER="${1:-3.10.11}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${EXE_BUILD_DIR:-$HOME/.ai_image_studio-build}"
-EMBED="$WORK/pyembed"
+PYDIR="$WORK/pywin"
+EXE_NAME="ai_image_studio.exe"
 
 export WINEPREFIX="$WORK/wineprefix"
 export WINEARCH=win64
@@ -28,47 +38,85 @@ DEPS=(
   "Flask>=3.0"
   "numpy==1.26.4"
   "opencv-python-headless==4.10.0.84"
-  "Pillow>=10"
   "pyinstaller==6.22.3"
 )
 
-command -v wine >/dev/null 2>&1 || {
-  echo "wine is not installed; installing wine64..."
-  sudo apt-get update -qq
-  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends wine64 wine
-}
+have() { command -v "$1" >/dev/null 2>&1; }
 
-if [ ! -x "$EMBED/python.exe" ]; then
-  echo "==> Preparing embeddable Windows Python $PYVER in $EMBED"
-  mkdir -p "$WORK"
-  curl -fsSL -o "$WORK/python-embed.zip" \
-    "https://www.python.org/ftp/python/$PYVER/python-$PYVER-embed-amd64.zip"
-  mkdir -p "$EMBED"
-  python3 -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" \
-    "$WORK/python-embed.zip" "$EMBED"
+if ! have wine || ! have 7z || ! have cabextract || ! have msiextract; then
+  echo "==> Installing build prerequisites (wine64, 7z, cabextract, msitools)"
+  sudo apt-get update -qq
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    wine64 wine p7zip-full cabextract msitools
 fi
 
-# The embeddable distribution ships without site-packages on the path.
-# Rewrite its ._pth so `import site` and Lib\site-packages take effect.
-MM="${PYVER%.*}"                       # 3.12
-ZIPNAME="python${MM/./}.zip"           # python312.zip
-PTH="$(ls "$EMBED"/python3*._pth | head -1)"
-printf '%s\n.\nLib\\site-packages\nimport site\n' "$ZIPNAME" > "$PTH"
+# Copy the Tcl/Tk runtime next to the interpreter, where CPython and PyInstaller
+# both expect it (Lib\tkinter plus tcl/ and DLLs/_tkinter.pyd + tcl86t/tk86t).
+extract_python() {
+  echo "==> Building Windows Python $PYVER in $PYDIR"
+  mkdir -p "$WORK"
+  local installer="$WORK/python-$PYVER-amd64.exe"
+  [ -f "$installer" ] || curl -fsSL -o "$installer" \
+    "https://www.python.org/ftp/python/$PYVER/python-$PYVER-amd64.exe"
 
-if ! wine "$EMBED/python.exe" -m pip --version >/dev/null 2>&1; then
+  # The installer bootstrapper is 32-bit and needs WoW64, so its payload is
+  # extracted directly instead of run. The MSIs inside the embedded cabinet are
+  # 64-bit and portable.
+  local unpack="$WORK/unpack"
+  rm -rf "$unpack" && mkdir -p "$unpack"
+  # 7z usually exposes the payload files directly; older p7zip does not, so fall
+  # back to carving the embedded cabinet and letting cabextract list it.
+  if ! 7z x -y "$installer" "-o$unpack" >/dev/null 2>&1 || [ ! -f "$unpack/a0" ]; then
+    local cab="$WORK/python-$PYVER-payload.cab"
+    python3 - "$installer" "$cab" <<'PY'
+import sys
+
+src, dst = sys.argv[1], sys.argv[2]
+data = open(src, "rb").read()
+offset = data.find(b"MSCF")  # cabinet magic
+if offset < 0:
+    raise SystemExit("no embedded cabinet found")
+with open(dst, "wb") as fh:
+    fh.write(data[offset:])
+print(offset)
+PY
+    cabextract -q -d "$unpack" "$cab"
+  fi
+
+  mkdir -p "$PYDIR"
+  # a0=core dlls  a2=python.exe  a6=Lib  a14=tkinter+tcl/tk
+  local msi
+  for msi in "$unpack"/a0 "$unpack"/a2 "$unpack"/a6 "$unpack"/a14; do
+    [ -f "$msi" ] || { echo "missing payload component: $msi" >&2; exit 1; }
+    msiextract -C "$PYDIR" "$msi" >/dev/null 2>&1 || true
+  done
+  mkdir -p "$PYDIR/Lib/site-packages"
+
+  wine "$PYDIR/python.exe" -c "import sys, tkinter; print('python', sys.version.split()[0], 'tk', tkinter.TkVersion)"
+}
+
+if [ ! -x "$PYDIR/python.exe" ] || ! wine "$PYDIR/python.exe" -c "import tkinter" >/dev/null 2>&1; then
+  extract_python
+fi
+
+if ! wine "$PYDIR/python.exe" -m pip --version >/dev/null 2>&1; then
   echo "==> Bootstrapping pip"
   curl -fsSL -o "$WORK/get-pip.py" https://bootstrap.pypa.io/get-pip.py
-  wine "$EMBED/python.exe" "$WORK/get-pip.py" --no-warn-script-location
+  wine "$PYDIR/python.exe" "$WORK/get-pip.py" --no-warn-script-location
 fi
 
 echo "==> Installing Windows build dependencies"
-wine "$EMBED/python.exe" -m pip install --no-warn-script-location "${DEPS[@]}"
+wine "$PYDIR/python.exe" -m pip install --no-warn-script-location "${DEPS[@]}"
 
-echo "==> Building executable"
+if [ "${AIS_CONSOLE:-0}" != "0" ]; then
+  echo "==> Building CONSOLE executable"
+else
+  echo "==> Building windowed (GUI) executable"
+fi
 rm -rf "$WORK/build" "$WORK/dist"
-wine "$EMBED/python.exe" -m PyInstaller "$ROOT/packaging/ai_image_studio.spec" \
+wine "$PYDIR/python.exe" -m PyInstaller "$ROOT/packaging/ai_image_studio.spec" \
   --noconfirm --distpath "$WORK/dist" --workpath "$WORK/build"
 
 echo
-echo "Built: $WORK/dist/ai_image_studio.exe"
-ls -lh "$WORK/dist/ai_image_studio.exe"
+echo "Built: $WORK/dist/$EXE_NAME"
+ls -lh "$WORK/dist/$EXE_NAME"

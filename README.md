@@ -40,17 +40,23 @@ Configuration (all optional):
 ### Windows executable
 
 Download `ai_image_studio.exe` from the
-[releases page](https://github.com/Askcodex-do/text2image/releases) and run it.
-It opens the GUI in your browser and writes all output to an `AIImageStudio`
-folder created beside the executable. Nothing is installed and no Python is
-required.
+[releases page](https://github.com/Askcodex-do/text2image/releases) and run
+(double-click) it. It is a windowed application, not a console program: a small
+native window appears with the local address and output folder, and the editor
+opens in your browser. Closing that window stops the server, so nothing is left
+running in the background.
 
-The executable is produced by the
-[build workflow](.github/workflows/build-exe.yml) on a native Windows runner.
-It can also be cross-built on Linux with Wine:
+All output is written to an `AIImageStudio` folder created beside the
+executable. Nothing is installed and no Python is required.
+
+The executable is built for **Python 3.10.11**, which is the version whose full
+CPython installer provides the Tcl/Tk runtime the window needs. It is produced
+by the [build workflow](.github/workflows/build-exe.yml) on a native Windows
+runner and can also be cross-built on Linux with Wine:
 
 ```bash
 bash packaging/build_exe.sh          # -> ~/.ai_image_studio-build/dist/ai_image_studio.exe
+AIS_CONSOLE=1 bash packaging/build_exe.sh   # console variant, for debugging
 ```
 
 Run the tests:
@@ -278,12 +284,16 @@ ai_image_studio/
     pipeline.py           face-aware editing pipeline
     storage.py            immutable-original storage
   templates/ static/      GUI
+  desktop.py              windowed launcher (native window + clean shutdown)
+  single_instance.py      one-instance lock shared by the exe and source runs
+run.py                    console/browser entry point
+run_desktop.py            windowed entry point used by the packaged exe
 packaging/
-  ai_image_studio.spec    PyInstaller configuration
+  ai_image_studio.spec    PyInstaller configuration (windowed by default)
   build_exe.sh            Wine-based cross build for Linux hosts
 .github/workflows/
   build-exe.yml           native Windows build, smoke test and release upload
-tests/                    49 tests covering pipeline, API, packaging and
+tests/                    62 tests covering pipeline, API, packaging and
                           honesty rules
 ```
 

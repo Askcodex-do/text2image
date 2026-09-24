@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import sys
 
-from ai_image_studio.config import AppConfig, default_output_dir
+from ai_image_studio.config import default_output_dir, open_browser_enabled
 from ai_image_studio.services.face_service import FaceDetector, _cascade_candidates
 
 
@@ -54,23 +54,21 @@ def test_env_override_still_wins_when_frozen(monkeypatch, tmp_path):
     assert default_output_dir() == str(chosen)
 
 
-def test_frozen_config_enables_browser_open_but_source_does_not(monkeypatch, tmp_path):
-    exe = tmp_path / "studio.exe"
-    exe.write_bytes(b"stub")
-    _simulate_frozen(monkeypatch, str(exe))
-    assert AppConfig.from_env().open_browser is True
-
-    monkeypatch.delattr(sys, "frozen")
+def test_browser_open_defaults_are_per_entry_point(monkeypatch):
+    """The windowed launcher opens a browser; a console run does not."""
     monkeypatch.delenv("AIS_OPEN_BROWSER", raising=False)
-    assert AppConfig.from_env().open_browser is False
+    assert open_browser_enabled(default=True) is True   # desktop launcher
+    assert open_browser_enabled(default=False) is False  # console run
 
-
-def test_browser_open_can_be_disabled_when_frozen(monkeypatch, tmp_path):
-    exe = tmp_path / "studio.exe"
-    exe.write_bytes(b"stub")
-    _simulate_frozen(monkeypatch, str(exe))
+    # The environment variable always wins over the per-entry-point default.
     monkeypatch.setenv("AIS_OPEN_BROWSER", "0")
-    assert AppConfig.from_env().open_browser is False
+    assert open_browser_enabled(default=True) is False
+    monkeypatch.setenv("AIS_OPEN_BROWSER", "1")
+    assert open_browser_enabled(default=False) is True
+    # Falsy spellings are accepted so scripts can disable it readably.
+    for value in ("0", "false", "no", "off", ""):
+        monkeypatch.setenv("AIS_OPEN_BROWSER", value)
+        assert open_browser_enabled(default=True) is False
 
 
 def test_cascade_candidates_include_bundle_fallback(monkeypatch, tmp_path):
@@ -97,3 +95,47 @@ def test_detector_without_cascade_degrades_gracefully(monkeypatch):
     detector = FaceDetector()
     assert detector.available is False
     assert detector.detect("does-not-exist.png") == []
+
+
+# --- windowed (GUI) build configuration -------------------------------------
+# The shipped artifact is a windowed executable. These assertions read the build
+# inputs directly so a regression back to a console build fails fast in CI,
+# instead of only showing up as a stray console window on a user's machine.
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SPEC_PATH = os.path.join(PROJECT_ROOT, "packaging", "ai_image_studio.spec")
+WORKFLOW_PATH = os.path.join(PROJECT_ROOT, ".github", "workflows", "build-exe.yml")
+
+
+def _spec_source() -> str:
+    with open(SPEC_PATH, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def test_spec_builds_a_windowed_executable():
+    spec = _spec_source()
+    # console defaults to False (windowed) unless AIS_CONSOLE is set at build time.
+    assert "console=CONSOLE" in spec
+    assert 'os.environ.get("AIS_CONSOLE", "0")' in spec
+
+
+def test_spec_uses_the_windowed_entry_point():
+    spec = _spec_source()
+    assert "run_desktop.py" in spec
+    assert "run.py" not in spec.replace("run_desktop.py", "")
+
+
+def test_spec_bundles_tkinter_for_the_lazy_import():
+    """``desktop`` imports tkinter inside a function, so it needs hidden imports."""
+    spec = _spec_source()
+    for module in ("tkinter", "tkinter.ttk", "tkinter.messagebox"):
+        assert f'"{module}"' in spec
+
+
+def test_ci_pins_the_target_python_and_asserts_a_gui_subsystem():
+    with open(WORKFLOW_PATH, encoding="utf-8") as handle:
+        workflow = handle.read()
+    assert "3.10.11" in workflow
+    # The CI step must fail if the artifact is a console binary (subsystem 3).
+    assert '-ne "2"' in workflow
+    assert "subsystem" in workflow

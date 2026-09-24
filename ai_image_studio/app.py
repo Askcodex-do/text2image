@@ -14,7 +14,7 @@ from flask import (
     send_from_directory,
 )
 
-from .config import AppConfig
+from .config import AppConfig, open_browser_enabled
 from .models import FacePreservationStrength, GenerationRequest, PipelineContext
 from .providers import create_provider, describe_providers
 from .services import ImagePipeline, PipelineError, Storage, StorageError
@@ -251,7 +251,7 @@ def main() -> None:
     print(f"  URL:    {url}")
     print(f"  Output: {config.output_dir}")
     print("Press Ctrl+C to stop.")
-    if config.open_browser:
+    if open_browser_enabled(default=False):
         _open_browser_later(url)
     app.run(host=config.host, port=config.port, debug=config.debug)
 

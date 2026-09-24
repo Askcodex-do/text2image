@@ -3,7 +3,28 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
+
+#: Subdirectory created next to the executable (frozen) or project (source).
+_OUTPUT_DIR_NAME = "AIImageStudio"
+
+
+def default_output_dir() -> str:
+    """Return a writable output directory for both source and frozen runs.
+
+    A PyInstaller bundle unpacks into a temporary directory that is deleted on
+    exit, so outputs must never default there.  A frozen build writes next to
+    the executable; a source run writes next to the project root.
+    """
+    override = os.environ.get("AIS_OUTPUT_DIR")
+    if override:
+        return override
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, _OUTPUT_DIR_NAME)
 
 
 @dataclass
@@ -16,20 +37,23 @@ class AppConfig:
     default_provider: str = "local"
     run_identity_check: bool = True
     debug: bool = False
+    open_browser: bool = False
 
     @classmethod
     def from_env(cls) -> "AppConfig":
-        default_output = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "AIImageStudio",
-        )
+        frozen = getattr(sys, "frozen", False)
         return cls(
-            output_dir=os.environ.get("AIS_OUTPUT_DIR", default_output),
+            output_dir=default_output_dir(),
             host=os.environ.get("AIS_HOST", "0.0.0.0"),
             port=int(os.environ.get("AIS_PORT", "12000")),
             default_provider=os.environ.get("AIS_PROVIDER", "local"),
             run_identity_check=os.environ.get("AIS_IDENTITY_CHECK", "1") != "0",
             debug=os.environ.get("AIS_DEBUG", "0") == "1",
+            # A double-clicked executable has no console expectation of opening
+            # a page, so frozen builds open the GUI while source runs do not.
+            open_browser=os.environ.get(
+                "AIS_OPEN_BROWSER", "1" if frozen else "0"
+            ) != "0",
         )
 
     @property

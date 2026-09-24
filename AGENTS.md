@@ -11,6 +11,26 @@ preserved across a style transformation.
 - Run: `python run.py` (defaults to port 12000, honors `AIS_PORT`)
 - Test: `python -m pytest tests/ -q`
 - Install: `pip install -r requirements.txt`
+- Build `.exe` (native Windows): `python -m PyInstaller packaging/ai_image_studio.spec --noconfirm`
+- Build `.exe` (Linux cross-build via Wine): `bash packaging/build_exe.sh`
+- Lint: `python -m pyflakes ai_image_studio tests`
+
+## Packaging
+
+- The frozen entry point is `run.py`; PyInstaller bundles `templates/` and
+  `static/` as data. `app._resource_dir()` resolves them from `sys._MEIPASS`
+  when frozen, so do not hardcode package-relative template paths.
+- Output must never default inside the bundle: `config.default_output_dir()`
+  writes beside `sys.executable` when frozen. `sys._MEIPASS` is deleted on exit.
+- Face cascades are bundled explicitly and resolved through
+  `face_service._cascade_candidates()`. Bundling is required because a frozen
+  OpenCV may not expose `cv2.data.haarcascades`.
+- Wine's `ucrtbase.dll` lacks `crealf`, so `numpy>=2` crashes under the
+  cross-build. `packaging/build_exe.sh` pins `numpy==1.26.4` and
+  `opencv-python-headless==4.10.0.84` for that reason only; native builds
+  (`requirements.txt`) are unaffected.
+- Do not commit build artifacts (`*.exe`, `dist/`, `build/`). Releases are
+  produced by `.github/workflows/build-exe.yml`.
 
 ## Critical constraints
 

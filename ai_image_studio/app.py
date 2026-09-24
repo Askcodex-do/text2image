@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any
 
 from flask import (
@@ -22,9 +23,28 @@ from .services.prompt_builder import builder_for
 from .services.pipeline import PROVIDER_DIALECTS
 
 
+def _resource_dir() -> str:
+    """Directory holding ``templates/`` and ``static/``.
+
+    Under PyInstaller the package lives in the extraction directory
+    (``sys._MEIPASS``); in a source checkout it sits beside this module.
+    """
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root:
+        bundled = os.path.join(bundle_root, "ai_image_studio")
+        if os.path.isdir(bundled):
+            return bundled
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 def create_app(config: AppConfig | None = None) -> Flask:
     config = config or AppConfig.from_env()
-    app = Flask(__name__, template_folder="templates", static_folder="static")
+    resources = _resource_dir()
+    app = Flask(
+        __name__,
+        template_folder=os.path.join(resources, "templates"),
+        static_folder=os.path.join(resources, "static"),
+    )
     app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024
 
     storage = Storage(config.output_dir)
@@ -202,11 +222,37 @@ def create_app(config: AppConfig | None = None) -> Flask:
     return app
 
 
+def _display_host(host: str) -> str:
+    """Return a host that is clickable in a browser."""
+    if host in ("0.0.0.0", "::", ""):
+        return "127.0.0.1"
+    return host
+
+
+def _open_browser_later(url: str) -> None:
+    """Open the GUI once the server has had time to bind its socket."""
+    import threading
+    import webbrowser
+
+    def _open() -> None:
+        try:
+            webbrowser.open(url)
+        except Exception:  # a missing browser must never crash the app
+            pass
+
+    threading.Timer(1.0, _open).start()
+
+
 def main() -> None:
     config = AppConfig.from_env()
     app = create_app(config)
-    print(f"AI Image Studio running at http://{config.host}:{config.port}")
-    print(f"Output directory: {config.output_dir}")
+    url = f"http://{_display_host(config.host)}:{config.port}"
+    print("AI Image Studio")
+    print(f"  URL:    {url}")
+    print(f"  Output: {config.output_dir}")
+    print("Press Ctrl+C to stop.")
+    if config.open_browser:
+        _open_browser_later(url)
     app.run(host=config.host, port=config.port, debug=config.debug)
 
 

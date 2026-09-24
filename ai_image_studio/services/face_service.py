@@ -17,6 +17,7 @@ detector (e.g. YuNet / an embedding model) without touching the pipeline.
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from typing import Any
 
@@ -24,6 +25,25 @@ import cv2
 import numpy as np
 
 from ..models import FaceBox, IdentityCheckResult
+
+#: Cascade file bundled by the frozen build (see the PyInstaller spec).
+_CASCADE_FILENAME = "haarcascade_frontalface_default.xml"
+
+
+def _cascade_candidates() -> list[str]:
+    """Places the frontal-face cascade may live, best first.
+
+    PyInstaller redirects ``cv2.data.haarcascades`` to the bundled copy, but if
+    an OpenCV build ships without cascade data the frozen spec also collects it
+    into ``cv2/data``.  Checking both keeps detection working in either case.
+    """
+    candidates = [
+        os.path.join(cv2.data.haarcascades, _CASCADE_FILENAME),
+    ]
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root:
+        candidates.append(os.path.join(bundle_root, "cv2", "data", _CASCADE_FILENAME))
+    return candidates
 
 
 class FaceDetector:
@@ -34,8 +54,12 @@ class FaceDetector:
     """
 
     def __init__(self, min_neighbors: int = 6, scale_factor: float = 1.1) -> None:
-        cascade_path = os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
-        self._cascade = cv2.CascadeClassifier(cascade_path)
+        self._cascade = cv2.CascadeClassifier()
+        for candidate in _cascade_candidates():
+            if os.path.exists(candidate):
+                self._cascade = cv2.CascadeClassifier(candidate)
+                if not self._cascade.empty():
+                    break
         self._min_neighbors = min_neighbors
         self._scale_factor = scale_factor
 

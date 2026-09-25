@@ -158,7 +158,7 @@ def test_no_face_continues_normally(blank_image, output_dir):
     assert len(result.images) == 1
     assert result.context.faces == []
     assert any("No face was detected" in w for w in result.context.warnings)
-    assert result.context.provider_uses_identity_reference is False
+    assert result.context.identity_preservation_active is False
 
 
 def test_identity_reference_is_used_when_face_present(face_image, output_dir):
@@ -174,10 +174,10 @@ def test_identity_reference_is_used_when_face_present(face_image, output_dir):
     )
     result = pipeline.execute(request, local_provider(storage))
     assert result.context.faces
-    assert result.context.provider_uses_identity_reference is True
+    assert result.context.identity_preservation_active is True
     assert result.context.identity_prompt
     metadata = result.images[0].metadata
-    assert metadata["face_preservation"] == "face-region compositing"
+    assert metadata["identity_preservation"] == "face-region compositing"
 
 
 def test_preserve_face_off_skips_identity(face_image, output_dir):
@@ -193,7 +193,7 @@ def test_preserve_face_off_skips_identity(face_image, output_dir):
     )
     result = pipeline.execute(request, local_provider(storage))
     assert result.context.identity_prompt == ""
-    assert result.context.provider_uses_identity_reference is False
+    assert result.context.identity_preservation_active is False
 
 
 def test_strength_changes_provider_params(output_dir):

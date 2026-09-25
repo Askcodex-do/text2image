@@ -5,12 +5,16 @@ local OpenCV provider it interprets the prompt text, so requests such as
 "chinese prince wearing a black robe and a gold crown" produce new content
 rather than a filter over the original photo.
 
-Trade-off, stated honestly in :meth:`capabilities`: the hosted model does not
-accept a reference image, so it cannot preserve a specific person's face.  When
-the user supplies a photo the provider therefore *describes* that photo's
-subject in the prompt and reports ``supports_face_preservation=False``, so the
-GUI tells the user that identity preservation is best-effort only instead of
-pretending otherwise.
+Two limitations are handled honestly rather than papered over:
+
+* The hosted model accepts no reference image, so a specific person's face
+  cannot be *conditioned* on.  Instead the user's own facial pixels are
+  composited onto the generated result, which is genuine (if approximate)
+  identity preservation.  :meth:`capabilities` reports this accurately, and the
+  per-image metadata records what actually happened.
+* The endpoint is deterministic for a given URL.  A distinct seed is therefore
+  derived for every requested image, otherwise a 4-image batch would come back
+  as four identical copies.
 
 The endpoint and model are configurable (``IMAGE_GEN_URL`` / ``IMAGE_GEN_MODEL``)
 so a different or self-hosted service can be dropped in without code changes.
@@ -19,10 +23,13 @@ so a different or self-hosted service can be dropped in without code changes.
 from __future__ import annotations
 
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
+
+import numpy as np
 
 from ..models import (
     GeneratedImage,
@@ -67,15 +74,28 @@ class CloudImageProvider(ImageProvider):
         self.timeout = int(
             self.config.get("timeout") or os.environ.get("IMAGE_GEN_TIMEOUT") or 120
         )
+        # The hosted service enforces a quota and rate limits bursts, so a batch
+        # of images can fail partway.  Retry transient failures with backoff.
+        self.retries = int(
+            self.config.get("retries") or os.environ.get("IMAGE_GEN_RETRIES") or 2
+        )
+        self.retry_delay = float(
+            self.config.get("retry_delay") or os.environ.get("IMAGE_GEN_RETRY_DELAY") or 3.0
+        )
         self._detector = FaceDetector()
 
     # -- Capabilities -----------------------------------------------------
     def capabilities(self) -> ProviderCapabilities:
+        # The hosted endpoint has no reference-image conditioning, but this
+        # provider still preserves identity by a real mechanism: after
+        # generation it detects the face in the result and composites the
+        # user's own facial pixels onto it.  That is genuine preservation (the
+        # person's pixels end up in the output), so it is advertised -- with an
+        # honest note that it depends on the generator producing a comparable
+        # head position.
+        compositing = self._compositing_enabled()
         return ProviderCapabilities(
-            # No reference-image conditioning on the hosted endpoint, so a
-            # specific person's identity cannot be guaranteed.  Reported
-            # honestly rather than advertised as supported.
-            supports_face_preservation=False,
+            supports_face_preservation=compositing,
             supports_reference_image=False,
             supports_multiple_faces=False,
             supports_composition_control=True,
@@ -86,15 +106,46 @@ class CloudImageProvider(ImageProvider):
             honors_prompt=True,
             is_remote=True,
             max_images_per_request=4,
-            strength_mapping={},
+            strength_mapping=(
+                {
+                    "low": {"face_blend": 0.40},
+                    "medium": {"face_blend": 0.60},
+                    "high": {"face_blend": 0.78},
+                    "maximum": {"face_blend": 0.92},
+                }
+                if compositing
+                else {}
+            ),
             notes=[
                 "Generates a brand-new image from your description, so it can "
                 "create people, clothing and scenes that are not in the photo.",
-                "This backend does not accept a reference image, so the person's "
-                "exact face is not guaranteed; the subject is re-described in "
-                "the prompt instead. Results are best-effort.",
+                (
+                    "The service does not accept a reference image, so the face "
+                    "is preserved by compositing your original facial pixels "
+                    "onto the generated result. This works best when the "
+                    "generated head position is similar to the photo."
+                )
+                if compositing
+                else (
+                    "Face preservation is disabled for this provider; identity "
+                    "is carried in the prompt only and is not guaranteed."
+                ),
             ],
         )
+
+    def _compositing_enabled(self) -> bool:
+        """Whether to composite the original face onto generated output.
+
+        On by default: without it, an uploaded photo contributes nothing but
+        words, which is precisely the complaint that the app "does not use the
+        face I gave it".  Set ``IMAGE_GEN_FACE_COMPOSITE=0`` to disable.
+        """
+        value = self.config.get("face_compositing")
+        if value is None:
+            value = os.environ.get("IMAGE_GEN_FACE_COMPOSITE", "1")
+        if isinstance(value, str):
+            return value.strip().lower() not in ("0", "false", "no", "off", "")
+        return bool(value)
 
     def is_available(self) -> bool:
         return bool(self.endpoint)
@@ -124,13 +175,21 @@ class CloudImageProvider(ImageProvider):
         width, height = _ASPECT_SIZES.get(request.aspect_ratio, (768, 768))
         count = max(1, min(request.number_of_images, 4))
 
+        # The hosted endpoint is deterministic: the same prompt without a seed
+        # returns byte-identical images, so a 4-image batch used to be four
+        # copies.  Always derive a distinct seed per output (the user's seed, if
+        # given, anchors the sequence so results stay reproducible).
+        base_seed = request.seed
+        if base_seed is None:
+            base_seed = int.from_bytes(os.urandom(4), "big") % 1_000_000
+
         results: list[GeneratedImage] = []
         for index in range(count):
-            seed = request.seed
-            if seed is not None:
-                seed = int(seed) + index
+            seed = int(base_seed) + index
             image_bytes = self._request_image(prompt, width, height, seed)
-            results.append(self._store(image_bytes, request, context, index))
+            results.append(
+                self._store(image_bytes, request, context, index, seed, edit=edit)
+            )
         return results
 
     # -- Prompt -----------------------------------------------------------
@@ -198,6 +257,21 @@ class CloudImageProvider(ImageProvider):
         if seed is not None:
             params["seed"] = seed
         url = f"{self.endpoint.rstrip('/')}/{urllib.parse.quote(prompt)}?{urllib.parse.urlencode(params)}"
+
+        last_error: ProviderError | None = None
+        for attempt in range(self.retries + 1):
+            if attempt:
+                time.sleep(self.retry_delay * attempt)
+            try:
+                return self._fetch(url)
+            except ProviderError as exc:
+                last_error = exc
+                if not self._is_transient(exc):
+                    raise
+        assert last_error is not None
+        raise last_error
+
+    def _fetch(self, url: str) -> bytes:
         request = urllib.request.Request(url, method="GET")
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
@@ -205,7 +279,7 @@ class CloudImageProvider(ImageProvider):
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:300]
             raise ProviderError(
-                f"The generation service returned HTTP {exc.code}: {detail}"
+                self._explain_http_error(exc.code, detail)
             ) from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise ProviderError(f"Could not reach the generation service: {exc}") from exc
@@ -213,12 +287,43 @@ class CloudImageProvider(ImageProvider):
             raise ProviderError("The generation service returned an empty response.")
         return payload
 
+    @staticmethod
+    def _explain_http_error(code: int, detail: str) -> str:
+        """Turn a raw service error into something the user can act on."""
+        if "INSUFFICIENT_BALANCE" in detail or "Insufficient balance" in detail:
+            return (
+                "The free generation quota for this service is exhausted, so no "
+                "images were created. Wait a few minutes and try again, request "
+                "fewer images at once, or switch to the Local provider. "
+                "(Underlying error: insufficient balance.)"
+            )
+        if code == 429:
+            return (
+                "The generation service is rate-limiting requests. Wait a "
+                "moment and try again, or request fewer images at once."
+            )
+        return f"The generation service returned HTTP {code}: {detail}"
+
+    @staticmethod
+    def _is_transient(exc: ProviderError) -> bool:
+        """Whether retrying has any chance of succeeding."""
+        text = str(exc)
+        return (
+            "quota" in text.lower()
+            or "rate-limit" in text.lower()
+            or "HTTP 5" in text
+            or "Could not reach" in text
+            or "empty response" in text
+        )
+
     def _store(
         self,
         payload: bytes,
         request: GenerationRequest,
         context: PipelineContext,
         index: int,
+        seed: int | None = None,
+        edit: bool = False,
     ) -> GeneratedImage:
         import cv2
         import numpy as np
@@ -232,6 +337,11 @@ class CloudImageProvider(ImageProvider):
             raise ProviderError(
                 "The generation service returned data that is not a valid image."
             )
+
+        preservation = "prompt-only (no reference image support)"
+        if edit and request.identity_requested() and self._compositing_enabled():
+            preservation = self._composite_faces(image, context)
+
         destination = storage.generated_path(
             original_filename=request.input_image or "image",
             style_key=request.style,
@@ -247,15 +357,60 @@ class CloudImageProvider(ImageProvider):
                 if context.original_image
                 else None
             ),
-            seed=request.seed,
+            seed=seed,
             provider=self.name,
             metadata={
                 "engine": "cloud",
                 "model": self.model,
                 "prompt": request.prompt,
-                "identity_preservation": "prompt-only (no reference image support)",
+                "identity_preservation": preservation,
             },
         )
+
+    def _composite_faces(
+        self,
+        generated: np.ndarray,
+        context: PipelineContext,
+    ) -> str:
+        """Composite the user's own facial pixels onto the generated image.
+
+        The generator invents its own composition, so the original face is
+        located in the *generated* frame and the original crop is resized onto
+        it.  This is what makes "convert my photo" actually keep the person
+        rather than producing a stranger who matches the description.
+        """
+        import cv2
+
+        from ..services.face_composite import composite_original_face
+
+        original = cv2.imread(context.original_image)
+        if original is None:
+            return "unavailable (original image could not be read)"
+
+        selected = set(
+            context.preserved_face_indices or [f.index for f in context.faces]
+        )
+        sources = [f for f in context.faces if f.index in selected]
+        if not sources:
+            return "skipped (no face detected in the original)"
+
+        targets = self._detector.detect_from_array(generated)
+        if not targets:
+            return "skipped (no face found in the generated image)"
+
+        face_blend = float(context.provider_params.get("face_blend", 0.78))
+        applied = 0
+        # Pair each source face with a generated face. The detector sorts
+        # largest-first on both sides, so the primary subject usually lines up.
+        for source_face, target_face in zip(sources, targets):
+            if composite_original_face(
+                generated, original, source_face, target_face, face_blend
+            ):
+                applied += 1
+
+        if not applied:
+            return "skipped (face region too small to composite)"
+        return f"face-region compositing ({applied} face(s))"
 
     def describe(self) -> dict[str, Any]:
         data = super().describe()

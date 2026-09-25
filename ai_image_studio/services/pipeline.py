@@ -152,16 +152,17 @@ class ImagePipeline:
         context: PipelineContext,
         caps: ProviderCapabilities,
     ) -> None:
-        """Mark whether a genuine identity reference will be used.
+        """Mark whether a genuine identity-preservation mechanism will run.
 
-        This flag is what distinguishes *real* identity preservation from a
-        prompt-only approximation, and drives the honesty of the UI copy.
+        This flag is what distinguishes *real* identity preservation (a
+        reference image or compositing the original face) from a prompt-only
+        approximation, and drives the honesty of the UI copy.
 
         The user-facing warning for a provider that cannot preserve identity is
         emitted by the prompt builder, which also knows whether the backend
         interprets the prompt, so no duplicate note is added here.
         """
-        context.provider_uses_identity_reference = bool(
+        context.identity_preservation_active = bool(
             request.identity_requested()
             and caps.supports_face_preservation
             and context.original_image

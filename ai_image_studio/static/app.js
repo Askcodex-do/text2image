@@ -30,6 +30,9 @@
     previewBtn: $("preview-btn"),
     promptPreview: $("prompt-preview"),
     gallery: $("gallery"),
+    results: $("results"),
+    resultCount: $("result-count"),
+    clearBtn: $("clear-btn"),
     error: $("error"),
     uploadStatus: $("upload-status"),
     facePanel: $("face-panel"),
@@ -87,14 +90,18 @@
     }
     if (faceSupported) {
       notes.push(
-        "This provider uses your original image as an identity reference, so " +
-        "the person's face is preserved. Results vary by image and style."
+        caps.supports_reference_image
+          ? "This provider uses your original image as an identity reference, " +
+            "so the person's face is preserved. Results vary by image and style."
+          : "This provider preserves the face by compositing your original " +
+            "facial pixels onto the generated result. Works best when the " +
+            "generated head position matches the photo; results vary by image " +
+            "and style."
       );
     } else {
       notes.push(
-        "This provider does not use your photo as an identity reference, so it " +
-        "cannot guarantee the same face. Preserve Face is best-effort: the " +
-        "subject is described in the prompt only."
+        "This provider cannot preserve the face: the person is described in " +
+        "the prompt only, which is not a likeness guarantee."
       );
     }
     if (!honorsPrompt) {
@@ -208,14 +215,19 @@
   }
 
   function renderImages(payload) {
-    el.gallery.innerHTML = "";
-    payload.images.forEach((image, i) => {
+    // Accumulate results into a scrollable history (like a search-results feed)
+    // instead of replacing the previous batch, so earlier generations are not
+    // lost. The first image ever added removes the placeholder.
+    const placeholder = el.gallery.querySelector(".placeholder");
+    if (placeholder) placeholder.remove();
+
+    payload.images.forEach((image) => {
       const card = document.createElement("div");
       card.className = "card";
 
       const img = document.createElement("img");
       img.src = `/media/${image.path}`;
-      img.alt = `Generated image ${i + 1}`;
+      img.alt = image.path;
       img.loading = "lazy";
 
       const body = document.createElement("div");
@@ -233,6 +245,16 @@
         none.textContent = "Identity check not performed";
         body.append(none);
       }
+      if (image.metadata && image.metadata.identity_preservation) {
+        const preserved = document.createElement("div");
+        preserved.className = "path";
+        preserved.textContent = `face preservation: ${image.metadata.identity_preservation}`;
+        preserved.title =
+          "What the provider actually did to preserve identity, as reported " +
+          "by the backend. This is not a guarantee that the people are " +
+          "identical.";
+        body.append(preserved);
+      }
       if (image.original_path) {
         const original = document.createElement("div");
         original.className = "path";
@@ -243,6 +265,30 @@
       card.append(img, body);
       el.gallery.append(card);
     });
+    revealResults(payload.images.length);
+  }
+
+  /* Append the newest batch to the gallery and bring it into view.
+   *
+   * The results panel sits beside the controls on a wide screen but *below*
+   * them on a narrow one, and the gallery grows as more images are generated.
+   * Without scrolling to the new cards the user has to hunt for them. */
+  function revealResults(count) {
+    const total = el.gallery.querySelectorAll(".card").length;
+    el.resultCount.textContent = total
+      ? `${total} image${total === 1 ? "" : "s"} (${count} new)`
+      : "";
+    const cards = el.gallery.querySelectorAll(".card");
+    const newest = cards[cards.length - 1];
+    if (newest && typeof newest.scrollIntoView === "function") {
+      newest.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }
+
+  function clearGallery() {
+    el.gallery.innerHTML =
+      '<p class="placeholder">Generated images will appear here.</p>';
+    el.resultCount.textContent = "";
   }
 
   async function generate() {
@@ -286,7 +332,8 @@
       if (!response.ok) throw new Error(data.error || "Preview failed.");
       const lines = [
         `Provider: ${data.provider}  (prompt dialect: ${data.dialect})`,
-        `Identity reference used: ${data.uses_identity_reference ? "yes" : "no"}`,
+        `Identity preservation active: ${data.identity_preservation_active ? "yes" : "no"}`,
+        `Reference image sent: ${data.uses_identity_reference ? "yes" : "no"}`,
         "",
         "Effective prompt:",
         data.effective_prompt || "(empty)",
@@ -310,6 +357,7 @@
   el.provider.addEventListener("change", applyCapabilities);
   el.generateBtn.addEventListener("click", generate);
   el.previewBtn.addEventListener("click", previewPrompt);
+  el.clearBtn.addEventListener("click", clearGallery);
 
   loadConfig().catch((error) => showError(error.message));
 })();

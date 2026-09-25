@@ -267,7 +267,11 @@ class PipelineContext:
     warnings: list[str] = field(default_factory=list)
     #: Faces the user asked to preserve (defaults to all detected faces).
     preserved_face_indices: list[int] = field(default_factory=list)
-    provider_uses_identity_reference: bool = False
+    #: True when a genuine identity-preservation mechanism will run -- either
+    #: reference-image conditioning or compositing the original face.  Distinct
+    #: from ``supports_reference_image``: the cloud provider preserves identity
+    #: by compositing without accepting a reference image.
+    identity_preservation_active: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -281,5 +285,5 @@ class PipelineContext:
             "provider_params": self.provider_params,
             "warnings": list(self.warnings),
             "preserved_face_indices": list(self.preserved_face_indices),
-            "provider_uses_identity_reference": self.provider_uses_identity_reference,
+            "identity_preservation_active": self.identity_preservation_active,
         }

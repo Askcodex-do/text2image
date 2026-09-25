@@ -170,9 +170,10 @@ def create_app(config: AppConfig | None = None) -> Flask:
         builder = builder_for(PROVIDER_DIALECTS.get(provider.name, "generic"))
         builder.build(req, context, caps)
         # Mirror the pipeline's own condition so the preview is truthful:
-        # a genuine identity reference requires support, an original, and a
-        # detected face with preservation requested.
-        uses_identity_reference = bool(
+        # genuine preservation requires provider support, an original, and a
+        # detected face with preservation requested.  A provider can preserve
+        # identity by compositing even without reference-image support.
+        identity_active = bool(
             req.identity_requested()
             and caps.supports_face_preservation
             and original
@@ -191,7 +192,10 @@ def create_app(config: AppConfig | None = None) -> Flask:
                     "expression": context.expression_prompt,
                 },
                 "provider_params": context.provider_params,
-                "uses_identity_reference": uses_identity_reference,
+                "identity_preservation_active": identity_active,
+                "uses_identity_reference": bool(
+                    identity_active and caps.supports_reference_image
+                ),
                 "warnings": context.warnings,
             }
         )

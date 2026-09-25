@@ -120,14 +120,14 @@ class RemoteImageProvider(ImageProvider):
             "composition": request.composition,
             "aspect_ratio": request.aspect_ratio,
             "number_of_images": min(request.number_of_images, caps.max_images_per_request),
-            "preserve_face": context.provider_uses_identity_reference,
+            "preserve_face": context.identity_preservation_active,
             "face_preservation_strength": request.face_preservation_strength.value,
             "preserve_composition": request.preserve_composition,
             "preserve_expression": request.preserve_expression,
         }
         payload.update(context.provider_params)
 
-        if edit and context.provider_uses_identity_reference:
+        if edit and context.identity_preservation_active:
             # The untouched original is sent as the identity reference.
             payload["reference_image"] = self._encode(context.original_image)
             payload["reference_image_role"] = "identity"
@@ -191,7 +191,7 @@ class RemoteImageProvider(ImageProvider):
                     provider=self.name,
                     metadata={
                         "remote": True,
-                        "identity_reference_sent": context.provider_uses_identity_reference,
+                        "identity_reference_sent": context.identity_preservation_active,
                     },
                 )
             )

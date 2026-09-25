@@ -105,8 +105,14 @@
       <pre id="prompt-preview" class="prompt-preview" hidden></pre>
     </section>
 
-    <section class="panel results" aria-label="Generated images">
-      <h2>Generated Images</h2>
+    <section id="results" class="panel results" aria-label="Generated images">
+      <div class="results-head">
+        <h2>Generated Images</h2>
+        <div class="results-head-right">
+          <span id="result-count" class="result-count" role="status"></span>
+          <button id="clear-btn" class="secondary small" type="button">Clear</button>
+        </div>
+      </div>
       <div id="error" class="error" hidden role="alert"></div>
       <div id="gallery" class="gallery">
         <p class="placeholder">Generated images will appear here.</p>

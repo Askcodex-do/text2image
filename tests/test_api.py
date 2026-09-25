@@ -25,6 +25,9 @@ def test_index_renders_required_controls(client):
         "Preserve Expression",
         "Generated Images",
         "Style",
+        'id="results"',
+        'id="result-count"',
+        'id="clear-btn"',
     ):
         assert needle in body, f"missing UI element: {needle}"
     # Tooltip required by the specification.
@@ -110,7 +113,7 @@ def test_generate_edit_preserves_original(client, app, face_image):
     data = response.get_json()
     assert response.status_code == 200, data
     assert len(data["images"]) == 1
-    assert data["pipeline"]["provider_uses_identity_reference"] is True
+    assert data["pipeline"]["identity_preservation_active"] is True
     assert data["pipeline"]["faces"]
     image = data["images"][0]
     assert image["original_path"] is not None
@@ -131,6 +134,29 @@ def test_generate_without_prompt_errors(client, face_image):
     )
     assert response.status_code == 400
     assert "description" in response.get_json()["error"].lower()
+
+
+def test_identity_reporting_uses_one_metadata_key(client, face_image):
+    """Regression: local and cloud providers disagreed on the metadata key, so
+    the UI silently showed nothing for one of them."""
+    image_id = upload(client, face_image).get_json()["image"]["id"]
+    response = client.post(
+        "/api/generate",
+        json={
+            "prompt": "an oil painting",
+            "input_image": image_id,
+            "style": "oil_painting_realism",
+            "preserve_face": True,
+            "face_preservation_strength": "high",
+            "number_of_images": 1,
+            "provider": "local",
+        },
+    )
+    data = response.get_json()
+    assert response.status_code == 200, data
+    metadata = data["images"][0]["metadata"]
+    assert "identity_preservation" in metadata
+    assert metadata["identity_preservation"].startswith("face-region compositing")
 
 
 def test_generate_remote_provider_unavailable_is_honest(client, monkeypatch):

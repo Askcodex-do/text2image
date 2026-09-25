@@ -27,6 +27,7 @@ from ..models import (
 )
 from .base import ImageProvider, ProviderError
 from ..services.face_service import FaceDetector
+from ..services.face_composite import blend_region_toward_original, expanded_box, feather_mask
 
 
 def _variation_offsets(index: int, count: int) -> float:
@@ -308,43 +309,15 @@ class LocalStyleProvider(ImageProvider):
         for face in context.faces:
             if face.index not in selected:
                 continue
-            # Expand the crop slightly to include the jaw/forehead that the
-            # detector typically excludes, then feather the seam.
-            pad_x = int(face.w * 0.25)
-            pad_y = int(face.h * 0.30)
-            x0 = max(0, face.x - pad_x)
-            y0 = max(0, face.y - pad_y)
-            x1 = min(width, face.x + face.w + pad_x)
-            y1 = min(height, face.y + face.h + pad_y)
-            if x1 <= x0 or y1 <= y0:
+            box = expanded_box(face, width, height)
+            if box is None:
                 continue
-            face_region = original[y0:y1, x0:x1].astype(np.float32)
-            styled_region = result[y0:y1, x0:x1].astype(np.float32)
-            mask = self._feather_mask(face_region.shape[:2])[..., None]
-            # ``face_blend`` is how strongly identity is pinned.  Even at the
-            # top setting the styled pixels stay in the majority at the centre
-            # of the face -- otherwise the "painting" would be invisible on a
-            # close-up portrait, which is exactly the bug this replaces.
-            style_keep = float(np.clip(1.0 - 0.55 * face_blend, 0.3, 1.0))
-            blended = face_region * (1.0 - style_keep * mask) + styled_region * (style_keep * mask)
-            result[y0:y1, x0:x1] = np.clip(blended, 0, 255).astype(np.uint8)
+            blend_region_toward_original(result, original, box, face_blend)
         return result
-
 
     @staticmethod
     def _feather_mask(shape: tuple[int, int], margin: float = 0.18) -> np.ndarray:
-        height, width = shape
-        mask = np.ones((height, width), dtype=np.float32)
-        pad_y = max(1, int(height * margin))
-        pad_x = max(1, int(width * margin))
-        # Linear ramps on each edge produce a soft, artefact-free blend.
-        ramp_y = np.linspace(0.0, 1.0, pad_y, dtype=np.float32)
-        ramp_x = np.linspace(0.0, 1.0, pad_x, dtype=np.float32)
-        mask[:pad_y, :] *= ramp_y[:, None]
-        mask[-pad_y:, :] *= ramp_y[::-1, None]
-        mask[:, :pad_x] *= ramp_x[None, :]
-        mask[:, -pad_x:] *= ramp_x[::-1][None, :]
-        return mask
+        return feather_mask(shape, margin)
 
     def _write(
         self,
@@ -371,9 +344,9 @@ class LocalStyleProvider(ImageProvider):
             metadata={
                 "engine": "opencv",
                 "style": request.style,
-                "face_preservation": (
+                "identity_preservation": (
                     "face-region compositing"
-                    if context.provider_uses_identity_reference
+                    if context.identity_preservation_active
                     else "none"
                 ),
             },

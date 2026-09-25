@@ -68,14 +68,27 @@ Three providers, with different honest trade-offs:
 - A provider must never claim a capability it lacks. `supports_face_preservation`
   gates the identity claim, and `honors_prompt` says whether the backend reads
   the prompt text. The local OpenCV provider reports `honors_prompt = False`
-  (it applies a preset style only); the cloud provider reports
-  `supports_face_preservation = False` (the hosted endpoint takes no reference
-  image). Report both honestly rather than letting the UI imply more.
+  (it applies a preset style only). The cloud provider reports
+  `supports_reference_image = False` (the hosted endpoint takes no reference
+  image) but `supports_face_preservation = True`, because it preserves identity
+  by a real mechanism -- detecting the face in the generated image and
+  compositing the user's own facial pixels onto it. Report both honestly rather
+  than letting the UI imply a guarantee either way.
 - Identity and style are separate concerns. The local provider blends the
   original face *toward* the stylised result; do not copy the original face back
   wholesale, or a close-up portrait comes back looking unstyled (this was a real
   bug). Each style must route to its own filter -- renaissance, cinematic and
   concept_art previously shared one and rendered identical output.
+- Face-preservation strength must be **monotonic**: a higher setting puts *more*
+  of the user's own face into the output, never less. All providers blend
+  through `face_composite.original_face_weight()`; the earlier
+  `style_keep_factor()` inverted the relationship, so "High" preserved less
+  identity than "Low" (a real bug). The cap keeps the requested style visible.
+- Every provider reports identity preservation under the single metadata key
+  `identity_preservation`. Local and cloud once used different keys, so the UI
+  silently showed nothing for one backend. `tests/test_api.py` guards this.
+- Batch images must be distinct: providers vary per-image seed / style strength,
+  otherwise a request for 4 images returns pixel-identical copies.
 - A provider that cannot preserve a reference face must still work: it applies
   the style / generates from the prompt and the pipeline records a best-effort
   warning. Only a provider that neither uses a reference nor reads the prompt
